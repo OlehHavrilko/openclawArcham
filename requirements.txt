@@ -1,0 +1,17 @@
+# OpenClaw Arkham Intel Agent Dependencies
+# ==========================================
+
+# Web3 interaction
+web3>=6.0.0
+
+# HTTP requests
+requests>=2.28.0
+
+# Data processing
+pandas>=2.0.0
+
+# Graph analysis for transaction tracing
+networkx>=3.0
+
+# Environment variables management
+python-dotenv>=1.0.0
