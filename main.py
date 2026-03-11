@@ -117,9 +117,8 @@ class ArkhamAgent:
                     logger.info(f"Target {address[:16]}... already tracked")
                     continue
                 
-                # Add to database
-                self.db.add_target(address, reward, title)
-                target_id = self.db.cursor.lastrowid
+                # Add to database (add_target returns target_id)
+                target_id = self.db.add_target(address, reward, title)
                 
                 # Send alert
                 if self.notifier:

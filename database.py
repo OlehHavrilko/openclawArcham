@@ -74,6 +74,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS targets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             address TEXT NOT NULL UNIQUE,
+            title TEXT,
             reward REAL NOT NULL,
             status TEXT NOT NULL DEFAULT 'new',
             tx_hash TEXT,
@@ -116,6 +117,7 @@ class Database:
         self, 
         address: str, 
         reward: float,
+        title: str = "Unknown",
         status: str = "new"
     ) -> Optional[int]:
         """
@@ -124,6 +126,7 @@ class Database:
         Args:
             address: Blockchain address of the target
             reward: Bounty reward amount in USD
+            title: Title/name of the bounty (default: 'Unknown')
             status: Initial status (default: 'new')
             
         Returns:
@@ -132,20 +135,20 @@ class Database:
         self._ensure_connection()
         
         insert_query = """
-        INSERT OR IGNORE INTO targets (address, reward, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO targets (address, title, reward, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """
         
         now = datetime.utcnow().isoformat()
         
         try:
             cursor = self.connection.cursor()
-            cursor.execute(insert_query, (address, reward, status, now, now))
+            cursor.execute(insert_query, (address, title, reward, status, now, now))
             self.connection.commit()
             
             if cursor.rowcount > 0:
                 target_id = cursor.lastrowid
-                logger.info(f"Added new target: {address[:10]}... (reward: ${reward})")
+                logger.info(f"Added new target: {address[:10]}... (reward: ${reward}, title: {title})")
                 return target_id
             else:
                 logger.debug(f"Target already exists: {address[:10]}...")
@@ -280,9 +283,10 @@ class Database:
 _db_instance: Optional[Database] = None
 
 
-def get_database() -> Database:
+def init_database() -> Database:
     """
-    Get or create database singleton instance.
+    Initialize or get database singleton instance.
+    This function is called from main.py to set up the database.
     
     Returns:
         Database instance
@@ -293,11 +297,11 @@ def get_database() -> Database:
     return _db_instance
 
 
-def add_target(address: str, reward: float, status: str = "new") -> Optional[int]:
+def add_target(address: str, reward: float, title: str = "Unknown", status: str = "new") -> Optional[int]:
     """
     Add new target using default database instance.
     """
-    return get_database().add_target(address, reward, status)
+    return init_database().add_target(address, reward, title, status)
 
 
 def update_status(
@@ -310,7 +314,7 @@ def update_status(
     """
     Update target status using default database instance.
     """
-    return get_database().update_status(
+    return init_database().update_status(
         target_id, status, tx_hash, investigation_report, ipfs_cid
     )
 
