@@ -31,8 +31,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-CYCLE_DELAY = 3600  # 1 hour between cycles
-MAX_RETRIES = 5
+CYCLE_DELAY = 3600  # 1 hour between cycles (normal operation)
+ERROR_RETRY_DELAY = 60  # 1 minute retry after network errors
 
 
 class ArkhamAgent:
@@ -94,22 +94,23 @@ class ArkhamAgent:
         self.cycle_count += 1
         logger.info(f"\n{'='*60}\nCYCLE #{self.cycle_count} - {datetime.utcnow().isoformat()}\n{'='*60}")
         
-        try:
-            # Step 1: Scout for new bounties
-            logger.info("[1/5] Scouting for new bounty targets...")
-            targets = self.scout.find_new_bounties()
+        # Step 1: Scout for new bounties
+        logger.info("[1/5] Scouting for new bounty targets...")
+        targets = self.scout.find_new_bounties()
+        
+        if not targets:
+            logger.info("No new targets found this cycle")
+            return
+        
+        logger.info(f"Found {len(targets)} potential target(s)")
+        
+        for target in targets:
+            target_id = None  # Initialize BEFORE any operations for safe error handling
+            address = target.get('address')
+            reward = target.get('reward', 0)
+            title = target.get('title', 'Unknown')
             
-            if not targets:
-                logger.info("No new targets found this cycle")
-                return
-            
-            logger.info(f"Found {len(targets)} potential target(s)")
-            
-            for target in targets:
-                address = target.get('address')
-                reward = target.get('reward', 0)
-                title = target.get('title', 'Unknown')
-                
+            try:
                 # Check if already tracked
                 existing = self.db.get_target_by_address(address)
                 if existing:
@@ -132,60 +133,57 @@ class ArkhamAgent:
                     logger.warning("Investigator not configured - skipping")
                     continue
                 
-                try:
-                    report, metadata = self.investigator.investigate(address)
+                report, metadata = self.investigator.investigate(address)
+                
+                if not report:
+                    logger.warning("Investigation produced no report")
+                    self.db.update_status(target_id, 'failed')
+                    continue
+                
+                # Step 3: Upload to IPFS
+                logger.info("[3/5] Uploading report to IPFS...")
+                
+                if not self.uploader:
+                    logger.warning("Uploader not configured - skipping")
+                    self.db.update_status(target_id, 'investigated')
+                    continue
+                
+                ipfs_cid = self.uploader.upload_to_ipfs(report)
+                
+                if not ipfs_cid:
+                    logger.error("IPFS upload failed")
+                    self.db.update_status(target_id, 'upload_failed')
+                    continue
+                
+                logger.info(f"Report uploaded: {ipfs_cid}")
+                
+                # Step 4: Submit to blockchain
+                logger.info("[4/5] Submitting to blockchain...")
+                
+                if not self.submitter:
+                    logger.warning("Submitter not configured - skipping")
+                    self.db.update_status(target_id, 'uploaded', ipfs_cid)
+                    continue
+                
+                tx_hash = self.submitter.submit_report(ipfs_cid, address)
+                
+                if tx_hash:
+                    self.db.update_status(target_id, 'submitted', tx_hash)
+                    logger.info(f"Transaction: {tx_hash}")
                     
-                    if not report:
-                        logger.warning("Investigation produced no report")
-                        self.db.update_status(target_id, 'failed')
-                        continue
+                    # Step 5: Notify
+                    logger.info("[5/5] Sending notification...")
                     
-                    # Step 3: Upload to IPFS
-                    logger.info("[3/5] Uploading report to IPFS...")
+                    if self.notifier:
+                        alert = format_submission_alert(address, ipfs_cid, tx_hash)
+                        self.notifier.send_message(alert)
+                else:
+                    self.db.update_status(target_id, 'tx_failed', ipfs_cid)
                     
-                    if not self.uploader:
-                        logger.warning("Uploader not configured - skipping")
-                        self.db.update_status(target_id, 'investigated')
-                        continue
-                    
-                    ipfs_cid = self.uploader.upload_to_ipfs(report)
-                    
-                    if not ipfs_cid:
-                        logger.error("IPFS upload failed")
-                        self.db.update_status(target_id, 'upload_failed')
-                        continue
-                    
-                    logger.info(f"Report uploaded: {ipfs_cid}")
-                    
-                    # Step 4: Submit to blockchain
-                    logger.info("[4/5] Submitting to blockchain...")
-                    
-                    if not self.submitter:
-                        logger.warning("Submitter not configured - skipping")
-                        self.db.update_status(target_id, 'uploaded', ipfs_cid)
-                        continue
-                    
-                    tx_hash = self.submitter.submit_report(ipfs_cid, address)
-                    
-                    if tx_hash:
-                        self.db.update_status(target_id, 'submitted', tx_hash)
-                        logger.info(f"Transaction: {tx_hash}")
-                        
-                        # Step 5: Notify
-                        logger.info("[5/5] Sending notification...")
-                        
-                        if self.notifier:
-                            alert = format_submission_alert(address, ipfs_cid, tx_hash)
-                            self.notifier.send_message(alert)
-                    else:
-                        self.db.update_status(target_id, 'tx_failed', ipfs_cid)
-                        
-                except Exception as e:
-                    logger.error(f"Investigation error: {e}")
+            except Exception as e:
+                logger.error(f"Investigation error for target {address}: {e}")
+                if target_id is not None:
                     self.db.update_status(target_id, 'error')
-                    
-        except Exception as e:
-            logger.error(f"Cycle error: {e}")
     
     def run(self):
         """Main loop for continuous operation."""
@@ -194,16 +192,18 @@ class ArkhamAgent:
         while self.running:
             try:
                 self.run_cycle()
+                if self.running:
+                    logger.info(f"Cycle complete. Sleeping for {CYCLE_DELAY}s...")
+                    time.sleep(CYCLE_DELAY)
             except KeyboardInterrupt:
                 logger.info("Shutdown requested")
                 self.running = False
                 break
             except Exception as e:
-                logger.error(f"Unexpected error: {e}")
-            
-            if self.running:
-                logger.info(f"Cycle complete. Sleeping for {CYCLE_DELAY}s...")
-                time.sleep(CYCLE_DELAY)
+                # Short sleep on network errors (e.g., WiFi disconnection)
+                # Prevents losing a full hour due to momentary connectivity issues
+                logger.error(f"Unexpected cycle error: {e}. Retrying in {ERROR_RETRY_DELAY}s...")
+                time.sleep(ERROR_RETRY_DELAY)
         
         logger.info("Agent stopped")
 
