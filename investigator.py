@@ -483,8 +483,11 @@ Focus on actionable intelligence for bounty submission."""
             Formatted prompt string
         """
         # Build transaction summary
+        # NOTE: With 32GB RAM and 8GB VRAM configuration, local LLM can handle
+        # 100+ transactions in context, enabling detection of hidden patterns
+        # across longer transaction chains that would be invisible in shorter samples
         tx_summary = []
-        for i, tx in enumerate(transactions[:20], 1):  # Limit to 20 for prompt
+        for i, tx in enumerate(transactions[:100], 1):  # Increased from 20 to 100 for full LLM capacity
             tx_summary.append(
                 f"{i}. From: {tx['from'][:16]}... → To: {tx['to'][:16]}... "
                 f"| Value: {tx['value']:.4f} ETH | Hash: {tx['hash'][:16]}..."
